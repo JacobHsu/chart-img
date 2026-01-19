@@ -41,7 +41,7 @@ jobs:
       run: |
         git config --global user.name 'GitHub Action'
         git config --global user.email 'action@github.com'
-        git add latest_chart.png
-        git commit -m "Update latest chart image" || exit 0
+        git add latest_chart.png README.md
+        git commit -m "Update chart and timestamp" || exit 0
         git push
 

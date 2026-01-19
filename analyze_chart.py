@@ -88,28 +88,41 @@ def analyze_chart_with_ai(image_url, symbol):
     )
 
     prompt = f"""
-你是一位專業的技術分析師，專門分析加密貨幣走勢。
+你是世界級的加密貨幣技術分析師，擅長價格行為 (Price Action) 與趨勢交易。
 
-我會提供你一張技術分析圖表，包含多條移動平均線（EMA）與 MACD 指標。請根據圖中走勢給出下列分析報告，語氣與格式請模仿 CoinAnk 行情分析風格，保持專業、條列清楚、簡潔易讀。
+圖表中包含：
+1. K線圖 ({symbol})
+2. EMA 指標 (多條移動平均線)
+3. 成交量 (Volume)
+4. MACD 指標 (底部副圖)
 
-請依下列格式回覆：
+請綜合分析圖表資訊，並嚴格依照下方格式產出報告（模仿 CoinAnk 專業簡報風格）：
 
 ---
-【技術分析報告】
-幣種代號：{symbol}
-趨勢判斷：請根據 EMA 排列與 MACD 指標給出：「偏多 / 偏空 / 震盪整理」
+【全方位技術分析報告】
+標的：{symbol}
+時間週期：{INTERVAL if 'INTERVAL' in globals() else '自訂'} 
 
-技術解讀：
-- 均線系統：根據 EMA 的排列關係，說明是否呈現多頭排列、空頭排列或均線糾結。
-- MACD：說明目前是金叉或死叉，柱狀圖變化，是否顯示趨勢改變。
+1. 趨勢訊號
+• 趨勢方向：[ 強力看多 | 偏多 | 震盪 | 偏空 | 強力看空 ]
+• 關鍵價位：
+  - 壓力位 (Resistance): [請觀察圖中前高或密集區估算]
+  - 支撐位 (Support): [請觀察圖中前低或密集區估算]
 
-操作建議：
-請從以下五項中選擇一個：「強力買入 / 買入 / 中立 / 賣出 / 強力賣出」，並簡要說明依據。
+2. 技術指標解讀
+• K線型態：[若是明顯反轉/延續型態請指出，如吞噬、十字星、W底/M頭...等，若無則填「無特殊型態」]
+• 均線系統：[說明 EMA 排列狀態，如多頭排列、空頭排列、糾結]
+• 資金動能：[觀察成交量 Volume 變化與 MACD 柱狀圖趨勢]
 
-注意事項：
-- 報告務必以條列清楚呈現，易讀性為優先
-- 不需展開過程，只需給出結論與解讀
+3. 交易策略建議
+• 操作建議：[ 買入 | 賣出 | 觀望 ]
+• 策略理由：[一句話總結進出場邏輯]
+
 ---
+請注意：
+- 輸出內容必須「言之有物」，避免模糊兩可的廢話。
+- 專注於圖表呈現的客觀事實。
+- 價位請根據圖片右側座標軸進行估算。
 """
 
     try:
@@ -162,6 +175,38 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"Failed to send message (Exception): {e}")
 
+import datetime
+
+# ... (existing imports)
+
+def update_readme_timestamp():
+    readme_path = "README.md"
+    try:
+        with open(readme_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        
+        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        new_lines = []
+        updated = False
+        
+        for line in lines:
+            # Check for the specific line to replace
+            if "*(此圖表會隨 GitHub Action" in line or "*Last Analysis:" in line:
+                new_lines.append(f"*Last Analysis: {current_time}*\n")
+                updated = True
+            else:
+                new_lines.append(line)
+        
+        if updated:
+            with open(readme_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            print(f"Updated README timestamp to: {current_time}")
+        else:
+            print("Timestamp line not found in README.")
+            
+    except Exception as e:
+        print(f"Failed to update README timestamp: {e}")
+
 def main():
     check_config()
     chart_url = get_chart_url(SYMBOL, INTERVAL)
@@ -172,6 +217,9 @@ def main():
     # 2. Analyze and Send Report
     analysis_report = analyze_chart_with_ai(chart_url, SYMBOL)
     send_telegram_message(analysis_report)
+    
+    # 3. Update Timestamp
+    update_readme_timestamp()
     
     print("Workflow completed successfully.")
 
