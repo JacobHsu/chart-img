@@ -1,6 +1,5 @@
 import os
 import requests
-import json
 import base64
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -12,17 +11,20 @@ load_dotenv()
 CHART_IMG_API_KEY = os.getenv("CHART_IMG_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GH_TOKEN = os.getenv("GH_TOKEN")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 SYMBOL = os.getenv("SYMBOL", "ETHUSDT") # Default symbol
 INTERVAL = os.getenv("INTERVAL", "1h")  # Default interval
+
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL = "meta/llama-3.3-70b-instruct"
 
 def check_config():
     missing = []
     if not CHART_IMG_API_KEY: missing.append("CHART_IMG_API_KEY")
     if not TELEGRAM_BOT_TOKEN: missing.append("TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
-    if not GH_TOKEN: missing.append("GH_TOKEN")
-    
+    if not NVIDIA_API_KEY: missing.append("NVIDIA_API_KEY")
+
     if missing:
         print(f"Error: Missing environment variables: {', '.join(missing)}")
         print("Please check your .env file or GitHub Secrets.")
@@ -79,52 +81,136 @@ def get_chart_url(symbol, interval):
             print(f"Response: {response.text}")
         exit(1)
 
-def analyze_chart_with_ai(image_url, symbol):
-    print("Analyzing chart with GitHub Models (gpt-4o)...")
-    
+def get_binance_klines(symbol: str, interval: str, limit: int = 200) -> list[float]:
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    return [float(k[4]) for k in response.json()]  # close prices
+
+def calculate_ema(prices: list[float], period: int) -> float:
+    k = 2 / (period + 1)
+    ema = prices[0]
+    for price in prices[1:]:
+        ema = price * k + ema * (1 - k)
+    return ema
+
+def get_indicators(symbol: str, interval: str) -> dict:
+    print(f"Fetching Binance klines for {symbol} ({interval})...")
+    closes = get_binance_klines(symbol, interval, limit=300)
+
+    ema5   = calculate_ema(closes, 5)
+    ema10  = calculate_ema(closes, 10)
+    ema20  = calculate_ema(closes, 20)
+    ema50  = calculate_ema(closes, 50)
+    ema100 = calculate_ema(closes, 100)
+
+    # MACD: EMA12 - EMA26, Signal: EMA9 of MACD line
+    ema12_series, ema26_series = [], []
+    k12, k26 = 2 / 13, 2 / 27
+    e12 = e26 = closes[0]
+    for price in closes:
+        e12 = price * k12 + e12 * (1 - k12)
+        e26 = price * k26 + e26 * (1 - k26)
+        ema12_series.append(e12)
+        ema26_series.append(e26)
+
+    macd_series = [m - s for m, s in zip(ema12_series, ema26_series)]
+    signal_val = calculate_ema(macd_series, 9)
+    macd_val   = macd_series[-1]
+    histogram  = macd_val - signal_val
+
+    return {
+        "close":   round(closes[-1], 2),
+        "ema5":    round(ema5, 2),
+        "ema10":   round(ema10, 2),
+        "ema20":   round(ema20, 2),
+        "ema50":   round(ema50, 2),
+        "ema100":  round(ema100, 2),
+        "macd":    round(macd_val, 4),
+        "signal":  round(signal_val, 4),
+        "histogram": round(histogram, 4),
+    }
+
+def encode_image_to_base64(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.standard_b64encode(f.read()).decode("utf-8")
+
+def analyze_chart_with_ai(symbol: str, indicators: dict) -> str:
+    print(f"Analyzing chart with NVIDIA NIM ({NVIDIA_MODEL})...")
+
     client = OpenAI(
-        base_url="https://models.inference.ai.azure.com",
-        api_key=GH_TOKEN,
+        base_url=NVIDIA_BASE_URL,
+        api_key=NVIDIA_API_KEY,
     )
 
+    ind = indicators
+    macd_cross = "金叉" if ind["macd"] > ind["signal"] else "死叉"
+    hist_sign  = "正值（偏多動能）" if ind["histogram"] > 0 else "負值（偏空動能）"
+
+    close = ind["close"]
+    if close > ind["ema5"] and ind["ema5"] > ind["ema10"] and ind["ema10"] > ind["ema20"]:
+        ema_arrangement = "多頭排列"
+    elif close < ind["ema5"] and ind["ema5"] < ind["ema10"] and ind["ema10"] < ind["ema20"]:
+        ema_arrangement = "空頭排列"
+    else:
+        ema_arrangement = "均線糾結"
+
     prompt = f"""
-你是一位專業的技術分析師，專門分析加密貨幣走勢。
+你是一位專業的加密貨幣技術分析師，請依據以下從幣安 API 取得的精確數值撰寫分析報告。
 
-我會提供你一張技術分析圖表，包含多條移動平均線（EMA）與 MACD 指標。請根據圖中走勢給出下列分析報告，語氣與格式請模仿 CoinAnk 行情分析風格，保持專業、條列清楚、簡潔易讀。
+【精確指標數值（已由程式計算，請直接使用，勿更改）】
+幣種：{symbol}
+收盤價：{ind["close"]}
+EMA5={ind["ema5"]} / EMA10={ind["ema10"]} / EMA20={ind["ema20"]} / EMA50={ind["ema50"]} / EMA100={ind["ema100"]}
+MACD={ind["macd"]} / Signal={ind["signal"]} / Histogram={ind["histogram"]}
 
-請依下列格式回覆：
+【已由程式判斷完成，請直接使用】
+均線排列：{ema_arrangement}（收盤價={close} vs EMA5={ind["ema5"]} / EMA10={ind["ema10"]} / EMA20={ind["ema20"]}）
+MACD 狀態：{macd_cross}（MACD={ind["macd"]} vs Signal={ind["signal"]}）
+柱狀圖：{hist_sign}（Histogram={ind["histogram"]}）
 
----
-【技術分析報告】
-幣種代號：{symbol}
-趨勢判斷：請根據 EMA 排列與 MACD 指標給出：「偏多 / 偏空 / 震盪整理」
+【操作建議規則（請嚴格遵守）】
+- 多頭排列 + 金叉 → 強力買入或買入
+- 多頭排列 + 死叉 → 中立
+- 均線糾結 → 中立
+- 空頭排列 + 死叉 → 強力賣出或賣出
+- 空頭排列 + 金叉 → 中立
 
-技術解讀：
-- 均線系統：根據 EMA 的排列關係，說明是否呈現多頭排列、空頭排列或均線糾結。
-- MACD：說明目前是金叉或死叉，柱狀圖變化，是否顯示趨勢改變。
+請依下列 HTML 格式輸出（直接輸出 HTML，不要加其他說明）：
 
-操作建議：
-請從以下五項中選擇一個：「強力買入 / 買入 / 中立 / 賣出 / 強力賣出」，並簡要說明依據。
+<b>📊 技術分析報告</b>
 
-注意事項：
-- 報告務必以條列清楚呈現，易讀性為優先
-- 不需展開過程，只需給出結論與解讀
----
+<b>幣種：</b>{symbol}　<b>收盤價：</b>{ind["close"]}
+
+<b>均線數值</b>
+EMA5={ind["ema5"]} | EMA10={ind["ema10"]} | EMA20={ind["ema20"]}
+EMA50={ind["ema50"]} | EMA100={ind["ema100"]}
+
+<b>MACD 數值</b>
+MACD={ind["macd"]} | Signal={ind["signal"]} | Histogram={ind["histogram"]}
+
+<b>趨勢判斷：</b>（偏多 / 偏空 / 震盪整理，依均線排列與MACD綜合判斷）
+
+<b>技術解讀</b>
+• <b>均線系統：</b>{ema_arrangement}，（補充說明均線支撐壓力與走勢含意，一句話）
+• <b>MACD：</b>{macd_cross}，柱狀圖{hist_sign}，（補充說明動能趨勢，一句話）
+
+<b>操作建議：</b>（強力買入 / 買入 / 中立 / 賣出 / 強力賣出）
+<b>依據：</b>（依均線排列+MACD狀態，一句話說明判斷邏輯）
 """
 
     try:
         response = client.chat.completions.create(
+            model=NVIDIA_MODEL,
             messages=[
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ],
+                    "content": prompt,
                 }
             ],
-            model="gpt-4o", # Switched to gpt-4o for GitHub Models compatibility
             temperature=0.1,
+            max_tokens=1024,
         )
         analysis = response.choices[0].message.content
         print("Analysis complete.")
@@ -152,8 +238,8 @@ def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text, # Using 'text' instead of 'caption' for sendMessage
-        "parse_mode": "Markdown"
+        "text": text,
+        "parse_mode": "HTML",
     }
     try:
         response = requests.post(url, data=payload)
@@ -162,18 +248,25 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"Failed to send message (Exception): {e}")
 
-def main():
+def main(analyze_only: bool = False):
     check_config()
-    chart_url = get_chart_url(SYMBOL, INTERVAL)
-    
-    # 1. Send Chart First
-    send_telegram_photo(chart_url)
-    
-    # 2. Analyze and Send Report
-    analysis_report = analyze_chart_with_ai(chart_url, SYMBOL)
+
+    if analyze_only:
+        if not os.path.exists("latest_chart.png"):
+            print("Error: latest_chart.png not found. Run without --analyze-only first.")
+            exit(1)
+        print("Skipping chart fetch, using existing latest_chart.png")
+    else:
+        chart_url = get_chart_url(SYMBOL, INTERVAL)
+        send_telegram_photo(chart_url)
+
+    indicators = get_indicators(SYMBOL, INTERVAL)
+    print(f"Indicators: {indicators}")
+    analysis_report = analyze_chart_with_ai(SYMBOL, indicators)
     send_telegram_message(analysis_report)
-    
+
     print("Workflow completed successfully.")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main(analyze_only="--analyze-only" in sys.argv)

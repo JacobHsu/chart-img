@@ -1,59 +1,115 @@
 # Crypto Analysis Bot (Python + GitHub Actions)
 
 這是一個自動化加密貨幣技術分析機器人，使用 Python 撰寫並整合 GitHub Actions 自動化執行。
-程式會自動產生 TradingView 技術線圖，利用 GitHub Models (GPT-4o) 進行 AI 趨勢解讀，並將圖表與報告即時推送到 Telegram。
+程式會自動產生 TradingView 技術線圖，從幣安 API 取得精確指標數值，透過 **NVIDIA NIM (LLaMA 3.3 70B)** 進行 AI 趨勢解讀，並將圖表與報告即時推送到 Telegram。
 
 ## 最新技術分析圖表 (Latest Analysis)
 ![Latest Chart](latest_chart.png)
 *(此圖表會隨 GitHub Action 執行自動更新)*
 
 ## 主要功能
-- **自動繪圖**: 整合 `chart-img.com` API 繪製包含 EMA 與 MACD 指標的專業線圖。
-- **AI 分析**: 透過 OpenAI SDK 連接 **GitHub Models (GPT-4o)** 進行影像識別與趨勢判斷。
-- **Telegram 推送**: 分析完成後自動發送圖文報告至指定群組。
+- **自動繪圖**: 整合 `chart-img.com` API 繪製包含 EMA 與 MACD 指標的專業線圖（深色主題）。
+- **精確指標計算**: 直接從幣安 API 取得 K 線數據，以 Python 計算 EMA5/10/20/50/100 及 MACD(12,26,9)，確保數值準確。
+- **AI 分析**: 透過 **NVIDIA NIM**（`meta/llama-3.3-70b-instruct`）解讀指標並生成繁體中文技術分析報告。
+- **Telegram 推送**: 分析完成後自動發送圖表與格式化報告（HTML 粗體）至指定群組。
 - **Agentic Skill**: 封裝為標準 Skill 格式，可供 AI Agent 直接調用。
 
-## 關於 Chart Img API
+## 技術架構
 
-本專案的核心繪圖功能由 **[chart-img.com](https://chart-img.com/)** [提供](https://chart-img.com/#pricing)。
-這是一個專業的 TradingView 圖表生成服務，允許開發者透過 API 產生高解析度的金融市場圖表。
+```
+幣安 Klines API ──► Python 計算 EMA / MACD ──► NVIDIA NIM (LLaMA 3.3) ──► Telegram
+chart-img.com   ──► TradingView 圖表 ──────────────────────────────────► Telegram
+```
 
-在本專案中的配置如下：
-- **圖表類型**: TradingView Advanced Chart (Dark Theme)
-- **技術指標 (Indicators)**:
-  1. **Volume**: 成交量，判斷市場活絡度。
-  2. **Moving Average Multiple (EMA)**: 多重指數移動平均線 (EMA 5, 10, 20)，用於判斷短期趨勢方向。
-  3. **MACD**: 平滑異同移動平均線，用於判斷動能與買賣訊號。
-- **特點**: 產生的圖片包含完整座標軸與指標數據，非常適合讓 AI (如 GPT-4o Vision) 進行影像辨識與技術分析。
+- **數值由 Python 計算**（不依賴 AI 讀圖），確保 EMA、MACD 判斷邏輯正確
+- **AI 僅負責撰寫報告文字**，不做數值讀取，消除視覺辨識誤判問題
+
+## 分析指標說明
+
+| 指標 | 參數 | 用途 |
+|------|------|------|
+| EMA | 5 / 10 / 20 / 50 / 100 | 均線排列判斷多頭/空頭/糾結 |
+| MACD | 快線12 / 慢線26 / Signal9 | 金叉/死叉與動能方向 |
+
+**均線排列定義**
+- 多頭排列：收盤價 > EMA5 > EMA10 > EMA20
+- 空頭排列：收盤價 < EMA5 < EMA10 < EMA20
+- 均線糾結：不符合以上兩者
+
+**操作建議規則**
+- 多頭排列 + 金叉 → 強力買入 / 買入
+- 多頭排列 + 死叉 → 中立
+- 均線糾結 → 中立
+- 空頭排列 + 死叉 → 強力賣出 / 賣出
+- 空頭排列 + 金叉 → 中立
 
 ## 如何使用
 
-### 1. 環境設定 (Environment Setup)
-請複製 `.env.example` 為 `.env` 並填入您的設定：
+### 1. 環境設定
+
+複製 `.env.example` 為 `.env` 並填入：
+
 ```ini
-CHART_IMG_API_KEY=your_key
-TELEGRAM_BOT_TOKEN=your_token
-TELEGRAM_CHAT_ID=your_chat_id
-GH_TOKEN=your_github_token
+CHART_IMG_API_KEY=your_key        # https://chart-img.com/
+TELEGRAM_BOT_TOKEN=your_token     # @BotFather
+TELEGRAM_CHAT_ID=your_chat_id     # @userinfobot 查詢
+NVIDIA_API_KEY=nvapi-...          # https://build.nvidia.com/
+SYMBOL=ETHUSDT                    # 監控幣種（選填）
+INTERVAL=1h                       # K 線週期（選填）
 ```
 
-### 2. 本地執行 (Local Run)
+### 2. 安裝套件
+
 ```bash
 pip install -r requirements.txt
+```
+
+### 3. 本地執行
+
+完整流程（抓圖 + 分析 + 推送）：
+```bash
 python analyze_chart.py
 ```
 
-### 3. 使用 Skills (Agent Use)
-本專案已整合為 Agent Skill，位於 `.agent/skills/crypto_analysis`。
-您可以直接對 AI Agent 下指令：
+僅重新分析現有圖表（不重抓，節省 API 次數）：
+```bash
+python analyze_chart.py --analyze-only
+```
+
+### 4. GitHub Actions 自動化
+
+專案內建排程（`.github/workflows/crypto_analysis.yml`），預設每 **4 小時**自動執行。
+請在 Repository → Settings → Secrets 設定以下變數：
+
+| Secret | 說明 |
+|--------|------|
+| `CHART_IMG_API_KEY` | chart-img.com API Key |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token |
+| `TELEGRAM_CHAT_ID` | Telegram Chat ID |
+| `NVIDIA_API_KEY` | NVIDIA NIM API Key |
+
+### 5. Agent Skill
+
+本專案封裝為 Agent Skill（`.agent/skills/crypto_analysis`），可直接對 AI Agent 下指令：
 > "幫我分析 ETH 的走勢"
 > "執行 crypto analysis"
 
-### 4. GitHub Actions 自動化
-專案內建 GitHub Action (`.github/workflows/crypto_analysis.yml`)，預設**每 4 小時**自動執行一次。
-請記得在 GitHub Repository 的 Secrets 中設定對應的環境變數。
-
 ## 專案結構
-- `analyze_chart.py`: 核心邏輯腳本。
-- `.agent/skills/`: Agent 專用的 Skill 定義檔。
-- `.github/workflows/`: 自動化排程設定。
+
+```
+.
+├── analyze_chart.py          # 核心邏輯（繪圖、計算指標、AI 分析、Telegram 推送）
+├── latest_chart.png          # 最新圖表（自動更新）
+├── .env.example              # 環境變數範本
+├── requirements.txt          # Python 套件
+├── .agent/skills/            # Agent Skill 定義
+└── .github/workflows/        # GitHub Actions 排程
+```
+
+## 相依套件
+
+```
+requests        # HTTP 呼叫（幣安 API、chart-img、Telegram）
+openai          # NVIDIA NIM API（OpenAI 相容介面）
+python-dotenv   # 讀取 .env 設定
+```
