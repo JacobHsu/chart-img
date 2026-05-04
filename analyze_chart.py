@@ -12,7 +12,7 @@ load_dotenv()
 CHART_IMG_API_KEY = os.getenv("CHART_IMG_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GH_TOKEN = os.getenv("GH_TOKEN")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 SYMBOL = os.getenv("SYMBOL", "ETHUSDT") # Default symbol
 INTERVAL = os.getenv("INTERVAL", "1h")  # Default interval
 
@@ -21,7 +21,7 @@ def check_config():
     if not CHART_IMG_API_KEY: missing.append("CHART_IMG_API_KEY")
     if not TELEGRAM_BOT_TOKEN: missing.append("TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
-    if not GH_TOKEN: missing.append("GH_TOKEN")
+    if not NVIDIA_API_KEY: missing.append("NVIDIA_API_KEY")
     
     if missing:
         print(f"Error: Missing environment variables: {', '.join(missing)}")
@@ -80,11 +80,11 @@ def get_chart_url(symbol, interval):
         exit(1)
 
 def analyze_chart_with_ai(image_url, symbol):
-    print("Analyzing chart with GitHub Models (gpt-4o)...")
-    
+    print("Analyzing chart with NVIDIA NIM (llama-3.2-90b-vision)...")
+
     client = OpenAI(
-        base_url="https://models.inference.ai.azure.com",
-        api_key=GH_TOKEN,
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key=NVIDIA_API_KEY,
     )
 
     prompt = f"""
@@ -136,7 +136,7 @@ def analyze_chart_with_ai(image_url, symbol):
                     ],
                 }
             ],
-            model="gpt-4o", # Switched to gpt-4o for GitHub Models compatibility
+            model="nvidia/llama-3.2-90b-vision-instruct",
             temperature=0.1,
         )
         analysis = response.choices[0].message.content

@@ -32,7 +32,7 @@ jobs:
         CHART_IMG_API_KEY: ${{ secrets.CHART_IMG_API_KEY }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         SYMBOL: 'ETHUSDT'
         INTERVAL: '1h'
       run: python analyze_chart.py
