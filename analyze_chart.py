@@ -1,6 +1,6 @@
 import os
+import datetime
 import requests
-import json
 import base64
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -16,13 +16,16 @@ NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 SYMBOL = os.getenv("SYMBOL", "ETHUSDT") # Default symbol
 INTERVAL = os.getenv("INTERVAL", "1h")  # Default interval
 
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL = "meta/llama-3.3-70b-instruct"
+
 def check_config():
     missing = []
     if not CHART_IMG_API_KEY: missing.append("CHART_IMG_API_KEY")
     if not TELEGRAM_BOT_TOKEN: missing.append("TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
     if not NVIDIA_API_KEY: missing.append("NVIDIA_API_KEY")
-    
+
     if missing:
         print(f"Error: Missing environment variables: {', '.join(missing)}")
         print("Please check your .env file or GitHub Secrets.")
@@ -79,65 +82,136 @@ def get_chart_url(symbol, interval):
             print(f"Response: {response.text}")
         exit(1)
 
-def analyze_chart_with_ai(image_url, symbol):
-    print("Analyzing chart with NVIDIA NIM (llama-3.2-90b-vision)...")
+def get_binance_klines(symbol: str, interval: str, limit: int = 200) -> list[float]:
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    return [float(k[4]) for k in response.json()]  # close prices
+
+def calculate_ema(prices: list[float], period: int) -> float:
+    k = 2 / (period + 1)
+    ema = prices[0]
+    for price in prices[1:]:
+        ema = price * k + ema * (1 - k)
+    return ema
+
+def get_indicators(symbol: str, interval: str) -> dict:
+    print(f"Fetching Binance klines for {symbol} ({interval})...")
+    closes = get_binance_klines(symbol, interval, limit=300)
+
+    ema5   = calculate_ema(closes, 5)
+    ema10  = calculate_ema(closes, 10)
+    ema20  = calculate_ema(closes, 20)
+    ema50  = calculate_ema(closes, 50)
+    ema100 = calculate_ema(closes, 100)
+
+    # MACD: EMA12 - EMA26, Signal: EMA9 of MACD line
+    ema12_series, ema26_series = [], []
+    k12, k26 = 2 / 13, 2 / 27
+    e12 = e26 = closes[0]
+    for price in closes:
+        e12 = price * k12 + e12 * (1 - k12)
+        e26 = price * k26 + e26 * (1 - k26)
+        ema12_series.append(e12)
+        ema26_series.append(e26)
+
+    macd_series = [m - s for m, s in zip(ema12_series, ema26_series)]
+    signal_val = calculate_ema(macd_series, 9)
+    macd_val   = macd_series[-1]
+    histogram  = macd_val - signal_val
+
+    return {
+        "close":   round(closes[-1], 2),
+        "ema5":    round(ema5, 2),
+        "ema10":   round(ema10, 2),
+        "ema20":   round(ema20, 2),
+        "ema50":   round(ema50, 2),
+        "ema100":  round(ema100, 2),
+        "macd":    round(macd_val, 4),
+        "signal":  round(signal_val, 4),
+        "histogram": round(histogram, 4),
+    }
+
+def encode_image_to_base64(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.standard_b64encode(f.read()).decode("utf-8")
+
+def analyze_chart_with_ai(symbol: str, indicators: dict) -> str:
+    print(f"Analyzing chart with NVIDIA NIM ({NVIDIA_MODEL})...")
 
     client = OpenAI(
-        base_url="https://integrate.api.nvidia.com/v1",
+        base_url=NVIDIA_BASE_URL,
         api_key=NVIDIA_API_KEY,
     )
 
+    ind = indicators
+    macd_cross = "金叉" if ind["macd"] > ind["signal"] else "死叉"
+    hist_sign  = "正值（偏多動能）" if ind["histogram"] > 0 else "負值（偏空動能）"
+
+    close = ind["close"]
+    if close > ind["ema5"] and ind["ema5"] > ind["ema10"] and ind["ema10"] > ind["ema20"]:
+        ema_arrangement = "多頭排列"
+    elif close < ind["ema5"] and ind["ema5"] < ind["ema10"] and ind["ema10"] < ind["ema20"]:
+        ema_arrangement = "空頭排列"
+    else:
+        ema_arrangement = "均線糾結"
+
     prompt = f"""
-你是世界級的加密貨幣技術分析師，擅長價格行為 (Price Action) 與趨勢交易。
+你是一位專業的加密貨幣技術分析師，請依據以下從幣安 API 取得的精確數值撰寫分析報告。
 
-圖表中包含：
-1. K線圖 ({symbol})
-2. EMA 指標 (多條移動平均線)
-3. 成交量 (Volume)
-4. MACD 指標 (底部副圖)
+【精確指標數值（已由程式計算，請直接使用，勿更改）】
+幣種：{symbol}
+收盤價：{ind["close"]}
+EMA5={ind["ema5"]} / EMA10={ind["ema10"]} / EMA20={ind["ema20"]} / EMA50={ind["ema50"]} / EMA100={ind["ema100"]}
+MACD={ind["macd"]} / Signal={ind["signal"]} / Histogram={ind["histogram"]}
 
-請綜合分析圖表資訊，並嚴格依照下方格式產出報告（模仿 CoinAnk 專業簡報風格）：
+【已由程式判斷完成，請直接使用】
+均線排列：{ema_arrangement}（收盤價={close} vs EMA5={ind["ema5"]} / EMA10={ind["ema10"]} / EMA20={ind["ema20"]}）
+MACD 狀態：{macd_cross}（MACD={ind["macd"]} vs Signal={ind["signal"]}）
+柱狀圖：{hist_sign}（Histogram={ind["histogram"]}）
 
----
-【全方位技術分析報告】
-標的：{symbol}
-時間週期：{INTERVAL if 'INTERVAL' in globals() else '自訂'} 
+【操作建議規則（請嚴格遵守）】
+- 多頭排列 + 金叉 → 強力買入或買入
+- 多頭排列 + 死叉 → 中立
+- 均線糾結 → 中立
+- 空頭排列 + 死叉 → 強力賣出或賣出
+- 空頭排列 + 金叉 → 中立
 
-1. 趨勢訊號
-• 趨勢方向：[ 強力看多 | 偏多 | 震盪 | 偏空 | 強力看空 ]
-• 關鍵價位：
-  - 壓力位 (Resistance): [請觀察圖中前高或密集區估算]
-  - 支撐位 (Support): [請觀察圖中前低或密集區估算]
+請依下列 HTML 格式輸出（直接輸出 HTML，不要加其他說明）：
 
-2. 技術指標解讀
-• K線型態：[若是明顯反轉/延續型態請指出，如吞噬、十字星、W底/M頭...等，若無則填「無特殊型態」]
-• 均線系統：[說明 EMA 排列狀態，如多頭排列、空頭排列、糾結]
-• 資金動能：[觀察成交量 Volume 變化與 MACD 柱狀圖趨勢]
+<b>📊 技術分析報告</b>
 
-3. 交易策略建議
-• 操作建議：[ 買入 | 賣出 | 觀望 ]
-• 策略理由：[一句話總結進出場邏輯]
+<b>幣種：</b>{symbol}　<b>收盤價：</b>{ind["close"]}
 
----
-請注意：
-- 輸出內容必須「言之有物」，避免模糊兩可的廢話。
-- 專注於圖表呈現的客觀事實。
-- 價位請根據圖片右側座標軸進行估算。
+<b>均線數值</b>
+EMA5={ind["ema5"]} | EMA10={ind["ema10"]} | EMA20={ind["ema20"]}
+EMA50={ind["ema50"]} | EMA100={ind["ema100"]}
+
+<b>MACD 數值</b>
+MACD={ind["macd"]} | Signal={ind["signal"]} | Histogram={ind["histogram"]}
+
+<b>趨勢判斷：</b>（偏多 / 偏空 / 震盪整理，依均線排列與MACD綜合判斷）
+
+<b>技術解讀</b>
+• <b>均線系統：</b>{ema_arrangement}，（補充說明均線支撐壓力與走勢含意，一句話）
+• <b>MACD：</b>{macd_cross}，柱狀圖{hist_sign}，（補充說明動能趨勢，一句話）
+
+<b>操作建議：</b>（強力買入 / 買入 / 中立 / 賣出 / 強力賣出）
+<b>依據：</b>（依均線排列+MACD狀態，一句話說明判斷邏輯）
 """
 
     try:
         response = client.chat.completions.create(
+            model=NVIDIA_MODEL,
             messages=[
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ],
+                    "content": prompt,
                 }
             ],
-            model="nvidia/llama-3.2-90b-vision-instruct",
             temperature=0.1,
+            max_tokens=1024,
         )
         analysis = response.choices[0].message.content
         print("Analysis complete.")
@@ -165,8 +239,8 @@ def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text, # Using 'text' instead of 'caption' for sendMessage
-        "parse_mode": "Markdown"
+        "text": text,
+        "parse_mode": "HTML",
     }
     try:
         response = requests.post(url, data=payload)
@@ -175,53 +249,49 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"Failed to send message (Exception): {e}")
 
-import datetime
-
-# ... (existing imports)
-
 def update_readme_timestamp():
     readme_path = "README.md"
     try:
         with open(readme_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-        
         current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         new_lines = []
         updated = False
-        
         for line in lines:
-            # Check for the specific line to replace
             if "*(此圖表會隨 GitHub Action" in line or "*Last Analysis:" in line:
                 new_lines.append(f"*Last Analysis: {current_time}*\n")
                 updated = True
             else:
                 new_lines.append(line)
-        
         if updated:
             with open(readme_path, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
             print(f"Updated README timestamp to: {current_time}")
         else:
             print("Timestamp line not found in README.")
-            
     except Exception as e:
         print(f"Failed to update README timestamp: {e}")
 
-def main():
+def main(analyze_only: bool = False):
     check_config()
-    chart_url = get_chart_url(SYMBOL, INTERVAL)
-    
-    # 1. Send Chart First
-    send_telegram_photo(chart_url)
-    
-    # 2. Analyze and Send Report
-    analysis_report = analyze_chart_with_ai(chart_url, SYMBOL)
+
+    if analyze_only:
+        if not os.path.exists("latest_chart.png"):
+            print("Error: latest_chart.png not found. Run without --analyze-only first.")
+            exit(1)
+        print("Skipping chart fetch, using existing latest_chart.png")
+    else:
+        chart_url = get_chart_url(SYMBOL, INTERVAL)
+        send_telegram_photo(chart_url)
+
+    indicators = get_indicators(SYMBOL, INTERVAL)
+    print(f"Indicators: {indicators}")
+    analysis_report = analyze_chart_with_ai(SYMBOL, indicators)
     send_telegram_message(analysis_report)
-    
-    # 3. Update Timestamp
     update_readme_timestamp()
-    
+
     print("Workflow completed successfully.")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main(analyze_only="--analyze-only" in sys.argv)
