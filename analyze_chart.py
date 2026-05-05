@@ -83,7 +83,7 @@ def get_chart_url(symbol, interval):
         exit(1)
 
 def get_binance_klines(symbol: str, interval: str, limit: int = 200) -> list[float]:
-    url = "https://api.binance.com/api/v3/klines"
+    url = "https://api.binance.us/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     response = requests.get(url, params=params)
     response.raise_for_status()
