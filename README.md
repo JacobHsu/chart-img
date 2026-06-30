@@ -5,7 +5,7 @@
 
 ## 最新技術分析圖表 (Latest Analysis)
 ![Latest Chart](latest_chart.png)  
-*Last Analysis: 2026-06-30 12:38:06 UTC*
+*Last Analysis: 2026-06-30 16:42:35 UTC*
 
 ## 主要功能
 - **自動繪圖**: 整合 `chart-img.com` API 繪製包含 EMA 與 MACD 指標的專業線圖（深色主題）。
