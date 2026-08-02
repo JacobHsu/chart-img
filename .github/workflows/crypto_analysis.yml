@@ -2,8 +2,8 @@ name: Crypto Analysis Bot
 
 on:
   schedule:
-    # 0, 4, 8, 12, 16, 20 UTC
-    - cron: '0 0,4,8,12,16,20 * * *'
+    # Daily at 12:00 Taiwan time (UTC+8) = 04:00 UTC
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 permissions:
